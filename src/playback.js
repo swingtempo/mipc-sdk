@@ -149,7 +149,7 @@ class PlaybackManager {
    * Get recording calendar — days that have recordings.
    * Uses ccm_box_get with flag=2 and zero time range.
    * @param {string} sn - Device serial number
-   * @returns {Promise<object>} Calendar data with recording days
+   * @returns {Promise<object>} Calendar data with date_infos array
    */
   async getRecordingCalendar(sn) {
     const res = await this.session.boxGet({
@@ -173,7 +173,7 @@ class PlaybackManager {
    * @param {string} sn - Device serial number
    * @param {number} startTimeMs - Start time in milliseconds (inclusive)
    * @param {number} endTimeMs - End time in milliseconds (exclusive)
-   * @returns {Promise<object>} Clip metadata with segments
+   * @returns {Promise<object>} Clip metadata with segs_sdc object
    */
   async getClipMetadata(sn, startTimeMs, endTimeMs) {
     const res = await this.session.boxGet({
@@ -195,7 +195,7 @@ class PlaybackManager {
    * Get all recording clips for the last N days.
    * @param {string} sn - Device serial number
    * @param {number} [daysBack=7] - Number of days to look back
-   * @returns {Promise<Array>} Array of clip metadata objects
+   * @returns {Promise<object>} Clip metadata with segs_sdc object
    */
   async getAllClips(sn, daysBack = 7) {
     const now = Date.now();

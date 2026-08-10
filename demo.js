@@ -233,91 +233,60 @@ async function main() {
 
       // Check playback endpoints — ccm_box_get for calendar & metadata
       console.log(`\n    📼 Playback History:`);
-      let clipCount = 0;
       
       try {
         // Step 1: Get recording calendar (which days have recordings)
         const calRes = await client.playback.getRecordingCalendar(dev.sn);
-        const totalCal = calRes?.data?.total_segs_counts ?? calRes?.total_segs_counts ?? 0;
+        const calData = calRes?.data || calRes;
+        const dateInfos = calData?.date_infos;
         
-        if (totalCal > 0) {
-          console.log(`       ${c('green', `✓ Found recordings on ${totalCal} day(s)`)}:`);
-          // Calendar response may contain days array in various locations
-          let recordingDays = [];
-          const calData = calRes.data || calRes;
-          if (Array.isArray(calData)) {
-            recordingDays = calData;
-          } else if (calData.days) {
-            recordingDays = calData.days;
-          } else if (calData.ret && Array.isArray(calData.ret)) {
-            recordingDays = calData.ret;
+        if (dateInfos && Array.isArray(dateInfos) && dateInfos.length > 0) {
+          console.log(`       ${c('green', `✓ Found recordings on ${dateInfos.length} time slots:`)}\n`);
+          // Group by day and show last 14 days
+          const days = new Map();
+          for (const info of dateInfos) {
+            if (info.date) {
+              const d = new Date(info.date * 1000);
+              const dayKey = d.toISOString().split('T')[0];
+              if (!days.has(dayKey)) days.set(dayKey, []);
+              days.get(dayKey).push(info);
+            }
           }
           
-          const displayDays = recordingDays.slice(-14);
-          for (const day of displayDays) {
-            const dayStr = typeof day === 'string' ? day : (day.date || day.day || JSON.stringify(day));
-            console.log(`          ${c('cyan', `• ${dayStr}`)}`);
+          const sortedDays = [...days.entries()].sort((a, b) => b[0].localeCompare(a[0]));
+          const displayDays = sortedDays.slice(0, 14);
+          for (const [dayKey, infos] of displayDays) {
+            const count = infos.length;
+            console.log(`          ${c('cyan', `• ${dayKey}`)} (${count} slot${count > 1 ? 's' : ''})`);
           }
-          if (recordingDays.length > 14) {
-            console.log(`          ... and ${recordingDays.length - 14} more`);
+          if (sortedDays.length > 14) {
+            console.log(`          ... and ${sortedDays.length - 14} more days`);
           }
         } else {
-          console.log(`       ${c('yellow', '⚠ No recording days found')}`);
-          console.log(`         (Device may not be set up for SD card recording)`);
+          console.log(`       ${c('yellow', '⚠ No recording calendar data found')}`);
         }
 
-        // Step 2: Get detailed clip metadata for last 7 days
+        // Step 2: Get detailed clip metadata for last 7 days (MUST use milliseconds!)
         const nowMs = Date.now();
         const weekAgoMs = nowMs - (7 * 24 * 60 * 60 * 1000);
         const metaRes = await client.playback.getClipMetadata(dev.sn, weekAgoMs, nowMs);
         
-        // Extract clips from response — check multiple possible locations
-        let clips = [];
         const metaData = metaRes?.data || metaRes;
-        if (metaData && typeof metaData === 'object') {
-          if (Array.isArray(metaData.ret)) {
-            clips = metaData.ret;
-          } else if (metaData.segments) {
-            clips = metaData.segments;
-          } else if (metaData.Segments) {
-            clips = metaData.Segments;
-          }
-        }
+        const segsInfo = metaData?.segs_sdc;
         
-        clipCount = clips.length;
-        if (clips.length > 0) {
-          console.log(`\n       ${c('bold', `🎞️ Clip Metadata (${clips.length} total):`)}`);
-          // Sort by start time descending (newest first)
-          const sorted = [...clips].sort((a, b) => {
-            const ta = a.start_time || a.time_start || 0;
-            const tb = b.start_time || b.time_start || 0;
-            return typeof tb === 'number' ? tb - ta : 0;
-          });
+        if (segsInfo && segsInfo.record_num) {
+          console.log(`\n       ${c('bold', `🎞️ SD Card Recordings:`)}`);
+          console.log(`       ${c('green', `✓ Total recorded segments: ${segsInfo.record_num.toLocaleString()}`)}`);
           
-          // Show last 20 clips
-          const display = sorted.slice(-20);
-          for (const clip of display) {
-            const st = clip.start_time || clip.time_start;
-            const et = clip.end_time || clip.time_end;
-            let duration = 0;
-            if (typeof et === 'number' && typeof st === 'number') {
-              duration = et - st; // seconds
-            }
-            
-            if (st) {
-              const startTime = new Date(typeof st === 'string' ? st : st * 1000).toLocaleString();
-              const durStr = duration > 0 ? ` (${(duration / 60).toFixed(1)}min)` : '';
-              console.log(`          ${c('cyan', `• ${startTime}`)}${durStr}`);
-            }
-          }
-          if (clips.length > 20) {
-            console.log(`          ... and ${clips.length - 20} more`);
+          // Show additional info if available
+          if (segsInfo.cid || segsInfo.sid) {
+            console.log(`       ${c('dim', '  Note: Full clip details require binnet/P2P protocol')}`);
+            console.log(`       Cloud API provides metadata count only.`);
           }
         } else {
-          // Check for segs_sdc info
-          const segsInfo = metaData?.segs_sdc;
-          if (segsInfo && segsInfo.record_num) {
-            console.log(`       ${c('yellow', `⚠ SD card reports ${segsInfo.record_num} recorded segments`)}:`);
+          const totalCounts = metaData?.total_segs_counts;
+          if (totalCounts && totalCounts > 0) {
+            console.log(`\n       ${c('bold', `🎞️ Total segments: ${totalCounts}`)}`);
           } else {
             console.log(`       ${c('dim', '  No clip metadata available for the last 7 days')}`);
           }

@@ -324,8 +324,10 @@ class Session {
 
   /**
    * Make a ccm_box_get request (for recording calendar/metadata).
-   * This endpoint uses dsess_ prefix for session params and d prefix for data params.
-   * @param {object} params - Parameters including sn, dflag, time range, etc.
+   * Matches the exact parameter structure from the real MIPC web app:
+   * {sess:{nid,sn}, sn:dev_sn, flag, start_time, end_time, search_type, cid, sid, direction, max_counts}
+   * The top-level 'sn' becomes 'dsn' in the URL (different from dsess_sn).
+   * @param {object} params - Parameters: sn (device serial), flag, start_time, end_time, etc.
    * @returns {Promise<object>} Parsed response data
    */
   async boxGet(params = {}) {
@@ -333,16 +335,21 @@ class Session {
     // API calls use flag=0 (per fn_nid in explore.js)
     const nid = createNid(this.seq, this.sid, this.shareKey, 0);
 
-    // Build query string: dsess_ for session, d prefix for data params
-    let qs = `dsess=1&dsess_nid=${nid}&dsess_sn=${params.sn || ''}`;
+    // Build params object matching the real app's structure:
+    // {sess:{nid,sn}, sn:dev_sn, flag, start_time, end_time, ...}
+    const boxParams = {
+      sess: { nid, sn: params.sn },
+      sn: params.sn,
+    };
     
-    // Add all other params with 'd' prefix (keys should NOT start with 'd')
+    // Add remaining params (flag, start_time, etc.)
     for (const [k, v] of Object.entries(params)) {
       if (k !== 'sn') {
-        qs += `&${k.startsWith('d') ? k : 'd' + k}=${encodeURIComponent(v)}`;
+        boxParams[k] = v;
       }
     }
 
+    const qs = buildQueryString(boxParams);
     const url = `${this.baseUrl}/ccm/ccm_box_get.js?hfrom_handle=${Math.floor(Math.random() * 1000000)}&hqid=&${qs}`;
     const body = await this._get(url);
     return parseResponse(body);
