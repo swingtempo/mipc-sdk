@@ -344,7 +344,7 @@ async function main() {
           
           console.log(`\n       ${c('green', `Total clips across fetched days: ${totalClipCount}`)}`);
 
-          // Save oldest clip metadata & a snapshot thumbnail
+          // Save oldest clip metadata
           if (oldestClipInfo) {
             const { dayKey, first, last } = oldestClipInfo;
             fs.writeFileSync(path.join(devDir, 'oldest_clip.json'), JSON.stringify({
@@ -352,23 +352,6 @@ async function main() {
               firstClip: { cid: first.cid, sid: first.sid, stm: first.stm, etm: first.etm, f: first.f },
               lastClip:   { cid: last.cid,  sid: last.sid,  stm: last.stm, etm: last.etm,  f: last.f },
             }, null, 2));
-            
-            // Grab a current snapshot to use as thumbnail reference
-            try {
-              const thumbPath = path.join(devDir, 'oldest_thumbnail.jpg');
-              const bestStream = allStreams.find(s => s.proto === 'rtsp') || allStreams[0];
-              if (bestStream) {
-                await runFfmpeg([
-                  '-y', ...(bestStream.proto === 'rtsp' ? ['-rtsp_transport', 'tcp'] : []),
-                  '-i', bestStream.url,
-                  '-frames:v', '1', '-q:v', '3', thumbPath,
-                ], 10000);
-                const size = fs.statSync(thumbPath).size;
-                console.log(`       ${c('dim', '└─')} 🖼️ Thumbnail saved (${(size / 1024).toFixed(1)}KB)`);
-              }
-            } catch (e) {
-              console.log(`       ${c('dim', '└─')} 🖼️ Thumbnail fetch failed`);
-            }
           }
         }
       } catch (e) {
@@ -382,23 +365,23 @@ async function main() {
         continue;
       }
 
-      // ---- 3. Download current snapshot frame -------------------------------
+      // ---- 3. Download snapshot frame --------------------------------------
       try {
-        const framePath = path.join(devDir, `${dev.sn}_current_frame.jpg`);
+        const snapPath = path.join(devDir, `${dev.sn}_snapshot.jpg`);
         const bestStream = liveStreams.find(s => s.proto === 'rtsp') || liveStreams[0];
-        
-        console.log(`    📸 Capturing current frame...`);
+
+        console.log(`    📸 Capturing snapshot...`);
         await runFfmpeg([
           '-y',
           ...(bestStream.proto === 'rtsp' ? ['-rtsp_transport', 'tcp'] : []),
           '-i', bestStream.url,
-          '-ss', '0', '-frames:v', '1', '-update', '1', '-q:v', '2', framePath,
+          '-frames:v', '1', '-q:v', '2', snapPath,
         ]);
-        
-        const size = fs.statSync(framePath).size;
-        console.log(`    ${c('green', '✓')} Frame: ${(size / 1024).toFixed(1)} KB`);
+
+        const size = fs.statSync(snapPath).size;
+        console.log(`    ${c('green', '✓')} Snapshot: ${(size / 1024).toFixed(1)} KB`);
       } catch (err) {
-        console.log(`    ${c('red', '✗')} Frame capture failed: ${err.message}`);
+        console.log(`    ${c('red', '✗')} Snapshot capture failed: ${err.message}`);
       }
 
       // ---- 4. Record 5-second live clip ------------------------------------
@@ -466,6 +449,9 @@ async function main() {
       }
 
       console.log();
+
+      //jayongg FOR NOW - break out of the loop after first device to avoid long waits
+      break;
     }
 
     // ---- Summary ----------------------------------------------------------
