@@ -1,11 +1,14 @@
 #!/usr/bin/env node
 /**
- * MIPC SDK Demo — Full camera capture tool
+ * MIPC SDK Demo — Camera enumeration & capture tool
  * 
- * Downloads:
- *   - Current snapshot frame from each camera's live stream
- *   - Oldest video segment from playback history (5s clip)
- *   - 5-second real-time recording from each camera
+ * For each camera:
+ *   1. Enumerates ALL available video sources and their URLs (names, types, endpoints)
+ *   2. Downloads a current snapshot frame from the live stream
+ *   3. Records a 5-second clip from the live stream
+ * 
+ * Note: Cloud HTTP API does NOT support downloading recorded playback clips.
+ * Playback requires binnet/P2P protocol (direct device connection).
  * 
  * Usage:
  *   node demo.js --output <destination_folder>
@@ -18,7 +21,7 @@
 const { MipcClient } = require('./src/index');
 const fs = require('fs');
 const path = require('path');
-const { execFile, spawn } = require('child_process');
+const { spawn } = require('child_process');
 
 // ---- Parse args -----------------------------------------------------------
 const args = process.argv.slice(2);
@@ -36,15 +39,14 @@ password = password || process.env.MIPC_PASS;
 // ---- Helpers --------------------------------------------------------------
 const colors = {
   reset: '\x1b[0m', bold: '\x1b[1m', dim: '\x1b[2m',
-  green: '\x1b[32m', yellow: '\x1b[33m', red: '\x1b[31m', cyan: '\x1b[36m', blue: '\x1b[34m',
+  green: '\x1b[32m', yellow: '\x1b[33m', red: '\x1b[31m', cyan: '\x1b[36m', blue: '\x1b[34m', magenta: '\x1b[35m',
 };
 
 function c(color, text) { return colors[color] ? colors[color] + text + colors.reset : text; }
-function pad(text, len) { return text.padEnd(len); }
 
 // Destination folder — REQUIRED (--output)
 if (!outputDir) {
-  console.log(c('bold', '\n📷 MIPC Camera SDK — Full Capture Demo\n'));
+  console.log(c('bold', '\n📷 MIPC Camera SDK — Enumeration & Capture Demo\n'));
   console.log(`Usage: ${c('cyan', 'node demo.js --output <destination_folder>')}`);
   console.log('\nCredentials via env vars or args:');
   console.log(`  ${c('cyan', 'MIPC_USER=xxx MIPC_PASS=xxx node demo.js --output ./captures')}`);
@@ -54,24 +56,17 @@ if (!outputDir) {
 
 // Append timestamp subdirectory (e.g. ./captures/2026-08-09T21-57-03)
 const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
-destFolder = path.resolve(path.join(outputDir, timestamp));
-destFolder = path.resolve(destFolder);
+const destFolder = path.resolve(path.join(outputDir, timestamp));
 
-// FFmpeg execution queue — serializes all calls to avoid conflicts
+// ---- FFmpeg queue (serializes calls to avoid conflicts) --------------------
 const ffmpegQueue = [];
 let ffmpegBusy = false;
 
 function runFfmpeg(args_list, timeoutMs = 30000) {
   return new Promise((resolve, reject) => {
-    // Filter out any undefined/null values (from conditional args)
     const cleanArgs = args_list.filter(a => a !== undefined && a !== null);
-    
-    if (!cleanArgs.length) {
-      reject(new Error('No ffmpeg arguments provided'));
-      return;
-    }
+    if (!cleanArgs.length) { reject(new Error('No ffmpeg arguments provided')); return; }
 
-    // Add to queue
     ffmpegQueue.push({ args: cleanArgs, timeoutMs, resolve, reject });
     processFfmpegQueue();
   });
@@ -87,8 +82,7 @@ function processFfmpegQueue() {
   let stderr = '';
   
   if (!proc) {
-    ffmpegBusy = false;
-    processFfmpegQueue(); // try next in queue
+    ffmpegBusy = false; processFfmpegQueue();
     reject(new Error(`spawn() returned null — is ffmpeg in PATH?`));
     return;
   }
@@ -97,23 +91,20 @@ function processFfmpegQueue() {
   
   const timer = setTimeout(() => {
     proc.kill('SIGTERM');
-    ffmpegBusy = false;
-    processFfmpegQueue(); // try next in queue
+    ffmpegBusy = false; processFfmpegQueue();
     reject(new Error(`ffmpeg timed out after ${timeoutMs}ms`));
   }, timeoutMs);
 
   proc.on('close', (code) => {
     clearTimeout(timer);
-    ffmpegBusy = false;
+    ffmpegBusy = false; processFfmpegQueue();
     if (code === 0 || code === null) resolve(stderr);
     else reject(new Error(`ffmpeg exited with code ${code}: ${stderr.slice(-200)}`));
-    processFfmpegQueue(); // try next in queue
   });
   
   proc.on('error', (e) => {
     clearTimeout(timer);
-    ffmpegBusy = false;
-    processFfmpegQueue(); // try next in queue
+    ffmpegBusy = false; processFfmpegQueue();
     reject(e);
   });
 }
@@ -125,7 +116,6 @@ async function captureClip(streamUrl, outputPath, duration = 5, label = 'Clip') 
   const proto = streamUrl.startsWith('rtsp://') ? 'RTSP' : 'HTTP';
   console.log(`    🎬 ${label} via ${proto}...`);
   
-  // Try RTSP with TCP first, then without (some cameras prefer UDP/auto)
   const transportOpts = proto === 'RTSP' ? [
     ['-rtsp_transport', 'tcp'],
     [],  // retry without explicit transport
@@ -135,33 +125,25 @@ async function captureClip(streamUrl, outputPath, duration = 5, label = 'Clip') 
     if (i > 0) console.log(`    ⚠️  Retrying without -rtsp_transport tcp...`);
     try {
       await runFfmpeg([
-        '-y',
-        ...transportOpts[i],
-        '-i', streamUrl,
-        '-t', String(duration),
-        '-c:v', 'libx264',
-        '-preset', 'ultrafast',
-        '-crf', '28',
-        '-an',
-        outputPath,
+        '-y', ...transportOpts[i], '-i', streamUrl,
+        '-t', String(duration), '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '28', '-an', outputPath,
       ]);
       const size = fs.statSync(outputPath).size;
-      console.log(`    ${c('green', '✓')} ${label}: ${outputPath} (${(size / 1024).toFixed(1)} KB)`);
+      console.log(`    ${c('green', '✓')} ${label}: ${(size / 1024).toFixed(1)} KB`);
       return true;
     } catch (e) {
-      if (i < transportOpts.length - 1) continue; // try next option
-      throw e; // last attempt failed
+      if (i < transportOpts.length - 1) continue;
+      throw e;
     }
   }
 }
 
 // ---- Main -----------------------------------------------------------------
 async function main() {
-  console.log(c('bold', '\n📷 MIPC Camera SDK — Full Capture Demo\n'));
+  console.log(c('bold', '\n📷 MIPC Camera SDK — Enumeration & Capture Demo\n'));
   console.log(`Destination: ${c('cyan', destFolder)}`);
   console.log(`Gateway:     ${baseUrl}\n`);
 
-  // Create destination folder
   fs.mkdirSync(destFolder, { recursive: true });
 
   const client = new MipcClient({ baseUrl, username, password });
@@ -188,8 +170,7 @@ async function main() {
     console.log();
 
     // ---- Process each device ----
-    for (let di = 0; di < devices.length; di++) {
-      const dev = devices[di];
+    for (const dev of devices) {
       const devDir = path.join(destFolder, dev.sn);
       fs.mkdirSync(devDir, { recursive: true });
 
@@ -204,124 +185,241 @@ async function main() {
       console.log(`    Model: ${info.Model || 'N/A'} | Firmware: ${info.FirmwareVersion || 'N/A'}`);
       console.log(`    Sensor: ${info.Sensor?.trim() || 'N/A'} | WiFi: ${info.Wifi || 'N/A'}`);
 
-      // ---- 2. Get live stream URLs ----
+      // ---- 2. ENUMERATE ALL VIDEO SOURCES & URLs --------------------------
+      console.log(c('bold', `\n    📡 Video Sources:`));
+      
+      const allStreams = [];
+      
+      if (vs && vs.VideoSources) {
+        for (const src of vs.VideoSources) {
+          const name = src.Name || src.name || 'Unnamed';
+          const token = src.Token || src.token || '?';
+          console.log(`       ${c('magenta', `• ${name}`)} [token: ${token}]`);
+        }
+      }
+
+      // Get live stream URLs (HTTP + RTSP) for each token
       const streams = await client.snapshots.getStreamUrls(dev.sn);
       
-      if (!streams.http && !streams.rtsp) {
+      if (streams.http) {
+        allStreams.push({ name: 'Live Stream (HTTP)', type: 'live', proto: 'http', url: streams.http, token: 'p0' });
+        console.log(`       ${c('cyan', `• Live Stream`)} [token: p0] → ${streams.http}`);
+      }
+      if (streams.rtsp) {
+        allStreams.push({ name: 'Live Stream (RTSP)', type: 'live', proto: 'rtsp', url: streams.rtsp, token: 'p0' });
+        console.log(`       ${c('cyan', `• Live Stream`)} [token: p0] → ${streams.rtsp}`);
+      }
+
+      // Try to get stream URLs for other tokens (p1, etc.)
+      try {
+        const extraStreams = await client.snapshots.getStreamUrls(dev.sn, 'p1');
+        if (extraStreams.http) {
+          allStreams.push({ name: 'Live Stream (HTTP)', type: 'live', proto: 'http', url: extraStreams.http, token: 'p1' });
+          console.log(`       ${c('cyan', `• Live Stream`)} [token: p1] → ${extraStreams.http}`);
+        }
+        if (extraStreams.rtsp) {
+          allStreams.push({ name: 'Live Stream (RTSP)', type: 'live', proto: 'rtsp', url: extraStreams.rtsp, token: 'p1' });
+          console.log(`       ${c('cyan', `• Live Stream`)} [token: p1] → ${extraStreams.rtsp}`);
+        }
+      } catch (e) { /* ignore */ }
+
+      // Check snapshot endpoints
+      try {
+        const snapRes = await client.api('ccm_pic_get.jpg', { sn: dev.sn, token: 'p0' });
+        if (snapRes && typeof snapRes === 'object') {
+          allStreams.push({ name: 'Snapshot (HTTP)', type: 'snapshot', proto: 'http', url: `${baseUrl}/ccm/ccm_pic_get.jpg?sn=${dev.sn}&token=p0`, token: 'p0' });
+        }
+      } catch (e) { /* ignore */ }
+
+      // Check playback endpoints — ccm_box_get for calendar & metadata
+      console.log(`\n    📼 Playback History:`);
+      let clipCount = 0;
+      
+      try {
+        // Step 1: Get recording calendar (which days have recordings)
+        const calRes = await client.playback.getRecordingCalendar(dev.sn);
+        const totalCal = calRes?.data?.total_segs_counts ?? calRes?.total_segs_counts ?? 0;
+        
+        if (totalCal > 0) {
+          console.log(`       ${c('green', `✓ Found recordings on ${totalCal} day(s)`)}:`);
+          // Calendar response may contain days array in various locations
+          let recordingDays = [];
+          const calData = calRes.data || calRes;
+          if (Array.isArray(calData)) {
+            recordingDays = calData;
+          } else if (calData.days) {
+            recordingDays = calData.days;
+          } else if (calData.ret && Array.isArray(calData.ret)) {
+            recordingDays = calData.ret;
+          }
+          
+          const displayDays = recordingDays.slice(-14);
+          for (const day of displayDays) {
+            const dayStr = typeof day === 'string' ? day : (day.date || day.day || JSON.stringify(day));
+            console.log(`          ${c('cyan', `• ${dayStr}`)}`);
+          }
+          if (recordingDays.length > 14) {
+            console.log(`          ... and ${recordingDays.length - 14} more`);
+          }
+        } else {
+          console.log(`       ${c('yellow', '⚠ No recording days found')}`);
+          console.log(`         (Device may not be set up for SD card recording)`);
+        }
+
+        // Step 2: Get detailed clip metadata for last 7 days
+        const nowMs = Date.now();
+        const weekAgoMs = nowMs - (7 * 24 * 60 * 60 * 1000);
+        const metaRes = await client.playback.getClipMetadata(dev.sn, weekAgoMs, nowMs);
+        
+        // Extract clips from response — check multiple possible locations
+        let clips = [];
+        const metaData = metaRes?.data || metaRes;
+        if (metaData && typeof metaData === 'object') {
+          if (Array.isArray(metaData.ret)) {
+            clips = metaData.ret;
+          } else if (metaData.segments) {
+            clips = metaData.segments;
+          } else if (metaData.Segments) {
+            clips = metaData.Segments;
+          }
+        }
+        
+        clipCount = clips.length;
+        if (clips.length > 0) {
+          console.log(`\n       ${c('bold', `🎞️ Clip Metadata (${clips.length} total):`)}`);
+          // Sort by start time descending (newest first)
+          const sorted = [...clips].sort((a, b) => {
+            const ta = a.start_time || a.time_start || 0;
+            const tb = b.start_time || b.time_start || 0;
+            return typeof tb === 'number' ? tb - ta : 0;
+          });
+          
+          // Show last 20 clips
+          const display = sorted.slice(-20);
+          for (const clip of display) {
+            const st = clip.start_time || clip.time_start;
+            const et = clip.end_time || clip.time_end;
+            let duration = 0;
+            if (typeof et === 'number' && typeof st === 'number') {
+              duration = et - st; // seconds
+            }
+            
+            if (st) {
+              const startTime = new Date(typeof st === 'string' ? st : st * 1000).toLocaleString();
+              const durStr = duration > 0 ? ` (${(duration / 60).toFixed(1)}min)` : '';
+              console.log(`          ${c('cyan', `• ${startTime}`)}${durStr}`);
+            }
+          }
+          if (clips.length > 20) {
+            console.log(`          ... and ${clips.length - 20} more`);
+          }
+        } else {
+          // Check for segs_sdc info
+          const segsInfo = metaData?.segs_sdc;
+          if (segsInfo && segsInfo.record_num) {
+            console.log(`       ${c('yellow', `⚠ SD card reports ${segsInfo.record_num} recorded segments`)}:`);
+          } else {
+            console.log(`       ${c('dim', '  No clip metadata available for the last 7 days')}`);
+          }
+        }
+      } catch (e) {
+        console.log(`       ${c('red', `✗ Playback check failed: ${e.message}`)}`);
+      }
+
+      // Summary of available streams
+      const liveStreams = allStreams.filter(s => s.type === 'live');
+      if (!liveStreams.length) {
         console.log(`    ${c('red', '✗')} No stream URLs available\n`);
         continue;
       }
 
-      console.log(`    HTTP:  ${streams.http || 'N/A'}`);
-      console.log(`    RTSP:  ${streams.rtsp || 'N/A'}\n`);
-
-      // ---- 3. Capture current frame from live stream ----
+      // ---- 3. Download current snapshot frame -------------------------------
       try {
         const framePath = path.join(devDir, `${dev.sn}_current_frame.jpg`);
+        const bestStream = liveStreams.find(s => s.proto === 'rtsp') || liveStreams[0];
         
-        // Prefer RTSP (more reliable — HTTP tokens expire quickly)
-        const streamUrl = streams.rtsp || streams.http;
-        if (!streamUrl) {
-          console.log(`    ${c('red', '✗')} No available stream URL`);
-        } else {
-          const proto = streams.rtsp ? 'RTSP' : 'HTTP';
-          console.log(`    📸 Capturing current frame via ${proto} stream...`);
-          await runFfmpeg([
-            '-y',
-            ...(streams.rtsp ? ['-rtsp_transport', 'tcp'] : []),
-            '-i', streamUrl,
-            '-ss', '0',
-            '-frames:v', '1',
-            '-update', '1',          // single image output (not sequence)
-            '-q:v', '2',             // high quality JPEG
-            framePath,
-          ]);
-          
-          const size = fs.statSync(framePath).size;
-          console.log(`    ${c('green', '✓')} Current frame: ${framePath} (${(size / 1024).toFixed(1)} KB)`);
-        }
+        console.log(`    📸 Capturing current frame...`);
+        await runFfmpeg([
+          '-y',
+          ...(bestStream.proto === 'rtsp' ? ['-rtsp_transport', 'tcp'] : []),
+          '-i', bestStream.url,
+          '-ss', '0', '-frames:v', '1', '-update', '1', '-q:v', '2', framePath,
+        ]);
+        
+        const size = fs.statSync(framePath).size;
+        console.log(`    ${c('green', '✓')} Frame: ${(size / 1024).toFixed(1)} KB`);
       } catch (err) {
         console.log(`    ${c('red', '✗')} Frame capture failed: ${err.message}`);
       }
 
-      // ---- 4. Record 5 seconds of real-time video ----
+      // ---- 4. Record 5-second live clip ------------------------------------
       try {
         const recordPath = path.join(devDir, `${dev.sn}_live_5s.mp4`);
-        // Refresh stream URLs right before capture (tokens expire quickly)
+        // Refresh stream URLs (tokens expire quickly)
         const freshStreams = await client.snapshots.getStreamUrls(dev.sn);
-        await captureClip(freshStreams.rtsp || freshStreams.http, recordPath, 5,
-          'Recording 5s live video');
+        const bestUrl = freshStreams.rtsp || freshStreams.http;
+        
+        if (bestUrl) {
+          await captureClip(bestUrl, recordPath, 5, 'Recording 5s live video');
+        } else {
+          console.log(`    ${c('red', '✗')} No stream URL available for recording`);
+        }
       } catch (err) {
         console.log(`    ${c('red', '✗')}: ${err.message}`);
       }
 
-      // ---- 5. Get playback history and download first video segment ----
+      // ---- 5. Try to download a playback clip ------------------------------
+      // Note: Cloud HTTP API does NOT support downloading recorded clips.
+      // The binnet/P2P protocol is required for actual playback downloads.
+      // We attempt it anyway and report the result.
       try {
-        const now = Math.floor(Date.now() / 1000);
+        const playClipPath = path.join(devDir, `${dev.sn}_playback_attempt.mp4`);
         
-        console.log(`    📼 Checking playback history...`);
-
-        // The ccm_replay endpoint via cloud HTTP API often returns errors.
-        // Actual playback requires the binnet/P2P protocol. We still query it
-        // and report what we find, then capture from live stream as fallback.
-        let segments = [];
-        try {
-          const timeline = await client.getPlaybackTimeline(dev.sn, {
-            startTime: now - 86400,
-            endTime: now,
-          });
-
-          // Try to get recording segments
-          segments = await client.getRecordingSegments(dev.sn, now - 86400, now);
-        } catch (e) {
-          console.log(`    ⚠️  Playback API error: ${e.message}`);
-        }
+        // Try ccm_play with time range (playback mode) — usually fails via cloud API
+        console.log(`    📼 Attempting playback download...`);
+        const nowSec = Math.floor(Date.now() / 1000);
+        const replayRes = await client.api('ccm_replay', { sn: dev.sn, start_time: nowSec - 3600, end_time: nowSec });
         
-        if (segments && segments.length > 0) {
-          console.log(`    Found ${c('bold', segments.length)} recording segment(s)`);
-
-          // Sort by start_time ascending → oldest first, take the last for oldest
-          const sorted = [...segments].sort((a, b) => {
-            const aTime = (a.start_time || a.time_start || 0);
-            const bTime = (b.start_time || b.time_start || 0);
-            return aTime - bTime;
-          });
-          const oldestSeg = sorted[sorted.length - 1];
-          const segStart = oldestSeg.start_time || oldestSeg.time_start;
-          const segEnd = oldestSeg.end_time || oldestSeg.time_end;
-          
-          if (segStart && segEnd) {
-            console.log(`    Oldest segment: ${new Date(segStart * 1000).toISOString()} → ${new Date(segEnd * 1000).toISOString()}`);
-          }
-
-          // Capture from live stream as representative clip
-          const playClipPath = path.join(devDir, `${dev.sn}_playback_clip.mp4`);
-          const freshStreams2 = await client.snapshots.getStreamUrls(dev.sn).catch(() => streams);
-          await captureClip(freshStreams2.rtsp || freshStreams2.http, playClipPath, 5,
-            'Capturing 5s clip (oldest segment — cloud playback needs binnet protocol)');
-        } else {
-          // No segments found — still capture a live clip
-          const playClipPath = path.join(devDir, `${dev.sn}_playback_clip.mp4`);
-          if (streams.http || streams.rtsp) {
-            await captureClip(streams.http || streams.rtsp, playClipPath, 5,
-              'Capturing 5s live stream clip');
+        if (replayRes.data && replayRes.data.Result) {
+          const result = replayRes.data.Result;
+          if (result.SubCode === 'ccms.system.err') {
+            console.log(`    ${c('yellow', '⚠ Cloud API does not support playback downloads')}: recorded clips require binnet/P2P protocol`);
+          } else {
+            // If we get actual segment data, try to download
+            const segments = result.Segments || result.segments || [];
+            if (segments.length > 0) {
+              console.log(`    Found ${c('bold', segments.length)} recording segment(s)`);
+              for (const seg of segments) {
+                const st = seg.start_time || seg.time_start;
+                const et = seg.end_time || seg.time_end;
+                if (st && et) {
+                  console.log(`       Segment: ${new Date(st * 1000).toISOString()} → ${new Date(et * 1000).toISOString()}`);
+                  
+                  // Try to get a playback URL for this segment
+                  const playUrl = await client.api('ccm_play', {
+                    sn: dev.sn, start_time: st, end_time: et,
+                    setup: { stream: 'RTP_Unicast', trans: { proto: 'http' } }, token: 'p0',
+                  });
+                  
+                  if (playUrl.data && playUrl.data.MediaUri && playUrl.data.MediaUri.Uri) {
+                    const clipPath = path.join(devDir, `${dev.sn}_clip_${Math.floor(st)}.mp4`);
+                    await captureClip(playUrl.data.MediaUri.Uri, clipPath, Math.min(et - st, 30), 'Downloading playback clip');
+                  } else {
+                    console.log(`       ${c('yellow', '⚠ No download URL for segment')}: ${JSON.stringify(playUrl).slice(0,200)}`);
+                  }
+                }
+              }
+            }
           }
         }
       } catch (err) {
-        // Playback API failed — still try to capture a live clip
-        const playClipPath = path.join(devDir, `${dev.sn}_playback_clip.mp4`);
-        if ((streams.http || streams.rtsp) && !fs.existsSync(playClipPath)) {
-          await captureClip(streams.http || streams.rtsp, playClipPath, 5,
-            'Capturing 5s live stream clip (fallback)').catch(e =>
-            console.log(`    ${c('red', '✗')} Clip capture failed: ${e.message}`)
-          );
-        }
+        console.log(`    ${c('yellow', '⚠ Playback download failed')}: ${err.message}`);
       }
 
       console.log();
     }
 
-    // ---- Summary ----
+    // ---- Summary ----------------------------------------------------------
     const allFiles = [];
     function walkDir(dir) {
       for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
@@ -357,7 +455,10 @@ async function main() {
       }
     }
 
-    console.log();
+    // ---- Available streams summary ----------------------------------------
+    console.log(c('bold', '\n   ℹ️  Note: Recording metadata is available via ccm_box_get'));
+    console.log(`   However, downloading actual recorded video segments requires the`);
+    console.log(`   binnet/P2P protocol (used by official MIPC/Vimtag apps).\n`);
 
   } catch (err) {
     console.log(c('red', `\n❌ Error: ${err.message}`));

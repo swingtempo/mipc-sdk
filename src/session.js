@@ -321,6 +321,32 @@ class Session {
     const res = await this.api('ccm_info_get');
     return res.data || res;
   }
+
+  /**
+   * Make a ccm_box_get request (for recording calendar/metadata).
+   * This endpoint uses dsess_ prefix for session params and d prefix for data params.
+   * @param {object} params - Parameters including sn, dflag, time range, etc.
+   * @returns {Promise<object>} Parsed response data
+   */
+  async boxGet(params = {}) {
+    this.seq++;
+    // API calls use flag=0 (per fn_nid in explore.js)
+    const nid = createNid(this.seq, this.sid, this.shareKey, 0);
+
+    // Build query string: dsess_ for session, d prefix for data params
+    let qs = `dsess=1&dsess_nid=${nid}&dsess_sn=${params.sn || ''}`;
+    
+    // Add all other params with 'd' prefix (keys should NOT start with 'd')
+    for (const [k, v] of Object.entries(params)) {
+      if (k !== 'sn') {
+        qs += `&${k.startsWith('d') ? k : 'd' + k}=${encodeURIComponent(v)}`;
+      }
+    }
+
+    const url = `${this.baseUrl}/ccm/ccm_box_get.js?hfrom_handle=${Math.floor(Math.random() * 1000000)}&hqid=&${qs}`;
+    const body = await this._get(url);
+    return parseResponse(body);
+  }
 }
 
 module.exports = Session;

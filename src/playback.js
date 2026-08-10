@@ -144,6 +144,64 @@ class PlaybackManager {
 
     return res.data || res;
   }
+
+  /**
+   * Get recording calendar — days that have recordings.
+   * Uses ccm_box_get with flag=2 and zero time range.
+   * @param {string} sn - Device serial number
+   * @returns {Promise<object>} Calendar data with recording days
+   */
+  async getRecordingCalendar(sn) {
+    const res = await this.session.boxGet({
+      sn,
+      flag: 2,
+      start_time: 0,
+      end_time: 0,
+      search_type: 0,
+      cid: -1,
+      sid: -1,
+      direction: 0,
+      max_counts: 15000,
+    });
+
+    return res.data || res;
+  }
+
+  /**
+   * Get detailed clip metadata for a specific date range.
+   * Uses ccm_box_get with flag=8 and millisecond timestamps.
+   * @param {string} sn - Device serial number
+   * @param {number} startTimeMs - Start time in milliseconds (inclusive)
+   * @param {number} endTimeMs - End time in milliseconds (exclusive)
+   * @returns {Promise<object>} Clip metadata with segments
+   */
+  async getClipMetadata(sn, startTimeMs, endTimeMs) {
+    const res = await this.session.boxGet({
+      sn,
+      flag: 8,
+      start_time: startTimeMs,
+      end_time: endTimeMs,
+      search_type: 0,
+      cid: -1,
+      sid: -1,
+      direction: 0,
+      max_counts: 15000,
+    });
+
+    return res.data || res;
+  }
+
+  /**
+   * Get all recording clips for the last N days.
+   * @param {string} sn - Device serial number
+   * @param {number} [daysBack=7] - Number of days to look back
+   * @returns {Promise<Array>} Array of clip metadata objects
+   */
+  async getAllClips(sn, daysBack = 7) {
+    const now = Date.now();
+    const startTimeMs = now - (daysBack * 24 * 60 * 60 * 1000);
+    return this.getClipMetadata(sn, startTimeMs, now);
+  }
 }
 
 module.exports = PlaybackManager;
