@@ -240,9 +240,11 @@ async function main() {
         const calData = calRes?.data || calRes;
         const dateInfos = calData?.date_infos;
         
+        let allDaysWithClips = [];
+        
         if (dateInfos && Array.isArray(dateInfos) && dateInfos.length > 0) {
-          console.log(`       ${c('green', `✓ Found recordings on ${dateInfos.length} time slots:`)}\n`);
-          // Group by day and show last 14 days
+          console.log(`       ${c('green', `✓ Found recordings on ${dateInfos.length} time slots`)}\n`);
+          // Group by day
           const days = new Map();
           for (const info of dateInfos) {
             if (info.date) {
@@ -253,43 +255,73 @@ async function main() {
             }
           }
           
-          const sortedDays = [...days.entries()].sort((a, b) => b[0].localeCompare(a[0]));
-          const displayDays = sortedDays.slice(0, 14);
-          for (const [dayKey, infos] of displayDays) {
-            const count = infos.length;
-            console.log(`          ${c('cyan', `• ${dayKey}`)} (${count} slot${count > 1 ? 's' : ''})`);
-          }
-          if (sortedDays.length > 14) {
-            console.log(`          ... and ${sortedDays.length - 14} more days`);
-          }
+          allDaysWithClips = [...days.entries()].sort((a, b) => b[0].localeCompare(a[0]));
         } else {
           console.log(`       ${c('yellow', '⚠ No recording calendar data found')}`);
         }
 
-        // Step 2: Get detailed clip metadata for last 7 days (MUST use milliseconds!)
-        const nowMs = Date.now();
-        const weekAgoMs = nowMs - (7 * 24 * 60 * 60 * 1000);
-        const metaRes = await client.playback.getClipMetadata(dev.sn, weekAgoMs, nowMs);
-        
-        const metaData = metaRes?.data || metaRes;
-        const segsInfo = metaData?.segs_sdc;
-        
-        if (segsInfo && segsInfo.record_num) {
-          console.log(`\n       ${c('bold', `🎞️ SD Card Recordings:`)}`);
-          console.log(`       ${c('green', `✓ Total recorded segments: ${segsInfo.record_num.toLocaleString()}`)}`);
+        // Step 2: Get detailed clip metadata for each day (flag=4, ms timestamps)
+        if (allDaysWithClips.length > 0) {
+          console.log(`       ${c('bold', `🎞️ Clip Metadata:`)}\n`);
           
-          // Show additional info if available
-          if (segsInfo.cid || segsInfo.sid) {
-            console.log(`       ${c('dim', '  Note: Full clip details require binnet/P2P protocol')}`);
-            console.log(`       Cloud API provides metadata count only.`);
+          const maxFetchDays = Math.min(allDaysWithClips.length, 30);
+          let totalClipCount = 0;
+          
+          for (let di = 0; di < maxFetchDays; di++) {
+            const [dayKey] = allDaysWithClips[di];
+            const dayStartMs = new Date(dayKey + 'T00:00:00').getTime();
+            const dayEndMs = new Date(dayKey + 'T23:59:59.999').getTime();
+            
+            try {
+              const metaRes = await client.playback.getClipMetadata(dev.sn, dayStartMs, dayEndMs);
+              // flag=4 response: {ret:{...}, segs:[{cid,sid,stm:"0x...",etm:"0x...",f}]}
+              const metaData = metaRes?.data || metaRes;
+              const segList = Array.isArray(metaData?.segs) ? metaData.segs : null;
+              
+              if (segList && segList.length > 0) {
+                totalClipCount += segList.length;
+                
+                // Determine clip flags: f=0 normal, f=8 motion-triggered start, f=10 special
+                const flagCounts = {};
+                for (const clip of segList) {
+                  const fv = clip.f ?? 0;
+                  flagCounts[fv] = (flagCounts[fv] || 0) + 1;
+                }
+                
+                // Show first and last clip metadata as samples
+                const first = segList[0];
+                const last = segList[segList.length - 1];
+                
+                console.log(`       ${c('bold', c('cyan', `📅 ${dayKey}`))} (${segList.length.toLocaleString()} clips)`);
+                console.log(`         ${c('dim', '├─')} cid=${first.cid}, sid range: ${first.sid} → ${last.sid}`);
+                
+                // Show flag breakdown
+                const flagLabels = Object.entries(flagCounts).map(([f, count]) => {
+                  const label = f === '0' ? 'continuous' : f === '8' ? 'motion-start' : f === '10' ? 'special' : `flag=${f}`;
+                  return `${label}: ${count.toLocaleString()}`;
+                });
+                console.log(`         ${c('dim', '├─')} flags: ${flagLabels.join(', ')}`);
+                
+                // Show first/last hex timestamps
+                console.log(`         ${c('dim', `└─ stm: ${first.stm} → ${last.stm}`)}`);
+              } else {
+                const totalCounts = metaData?.total_segs_counts || 0;
+                if (totalCounts > 0) {
+                  console.log(`       ${c('bold', c('cyan', `📅 ${dayKey}`))} (~${totalCounts} recordings, no detail list)`);
+                } else {
+                  console.log(`       ${c('bold', c('cyan', `📅 ${dayKey}`))} (no clips found)`);
+                }
+              }
+            } catch (e) {
+              console.log(`       ${c('yellow', `⚠ Failed to fetch metadata for ${dayKey}: ${e.message}`)}`);
+            }
           }
-        } else {
-          const totalCounts = metaData?.total_segs_counts;
-          if (totalCounts && totalCounts > 0) {
-            console.log(`\n       ${c('bold', `🎞️ Total segments: ${totalCounts}`)}`);
-          } else {
-            console.log(`       ${c('dim', '  No clip metadata available for the last 7 days')}`);
+          
+          if (allDaysWithClips.length > maxFetchDays) {
+            console.log(`\n         ${c('dim', `... (${allDaysWithClips.length - maxFetchDays} more days not shown)`)}\n`);
           }
+          
+          console.log(`\n       ${c('green', `Total clips across fetched days: ${totalClipCount}`)}`);
         }
       } catch (e) {
         console.log(`       ${c('red', `✗ Playback check failed: ${e.message}`)}`);

@@ -169,16 +169,16 @@ class PlaybackManager {
 
   /**
    * Get detailed clip metadata for a specific date range.
-   * Uses ccm_box_get with flag=8 and millisecond timestamps.
+   * Uses ccm_box_get with flag=4 and millisecond timestamps.
    * @param {string} sn - Device serial number
    * @param {number} startTimeMs - Start time in milliseconds (inclusive)
    * @param {number} endTimeMs - End time in milliseconds (exclusive)
-   * @returns {Promise<object>} Clip metadata with segs_sdc object
+   * @returns {Promise<object>} Clip metadata with segs array
    */
   async getClipMetadata(sn, startTimeMs, endTimeMs) {
     const res = await this.session.boxGet({
       sn,
-      flag: 8,
+      flag: 4,
       start_time: startTimeMs,
       end_time: endTimeMs,
       search_type: 0,
