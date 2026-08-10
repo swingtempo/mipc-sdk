@@ -1,0 +1,14 @@
+{
+  "name": "mipc-sdk",
+  "version": "1.0.0",
+  "description": "SDK for MIPC / Vimtag cloud camera platform — device enumeration, snapshots, playback history",
+  "main": "src/index.js",
+  "scripts": {
+    "test": "node test.js"
+  },
+  "dependencies": {
+    "crypto-js": "^4.2.0"
+  },
+  "keywords": ["mipc", "vimtag", "camera", "ip-camera"],
+  "license": "MIT"
+}
