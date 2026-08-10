@@ -285,6 +285,7 @@ async function main() {
           
           const maxFetchDays = Math.min(allDaysWithClips.length, 30);
           let totalClipCount = 0;
+          let oldestClipInfo = null; // tracked across iterations — last valid day wins (=oldest)
           
           for (let di = 0; di < maxFetchDays; di++) {
             const [dayKey] = allDaysWithClips[di];
@@ -299,6 +300,7 @@ async function main() {
               
               if (segList && segList.length > 0) {
                 totalClipCount += segList.length;
+                oldestClipInfo = { dayKey, first: segList[0], last: segList[segList.length - 1] };
                 
                 // Determine clip flags: f=0 normal, f=8 motion-triggered start, f=10 special
                 const flagCounts = {};
@@ -341,6 +343,33 @@ async function main() {
           }
           
           console.log(`\n       ${c('green', `Total clips across fetched days: ${totalClipCount}`)}`);
+
+          // Save oldest clip metadata & a snapshot thumbnail
+          if (oldestClipInfo) {
+            const { dayKey, first, last } = oldestClipInfo;
+            fs.writeFileSync(path.join(devDir, 'oldest_clip.json'), JSON.stringify({
+              date: dayKey,
+              firstClip: { cid: first.cid, sid: first.sid, stm: first.stm, etm: first.etm, f: first.f },
+              lastClip:   { cid: last.cid,  sid: last.sid,  stm: last.stm, etm: last.etm,  f: last.f },
+            }, null, 2));
+            
+            // Grab a current snapshot to use as thumbnail reference
+            try {
+              const thumbPath = path.join(devDir, 'oldest_thumbnail.jpg');
+              const bestStream = allStreams.find(s => s.proto === 'rtsp') || allStreams[0];
+              if (bestStream) {
+                await runFfmpeg([
+                  '-y', ...(bestStream.proto === 'rtsp' ? ['-rtsp_transport', 'tcp'] : []),
+                  '-i', bestStream.url,
+                  '-frames:v', '1', '-q:v', '3', thumbPath,
+                ], 10000);
+                const size = fs.statSync(thumbPath).size;
+                console.log(`       ${c('dim', '└─')} 🖼️ Thumbnail saved (${(size / 1024).toFixed(1)}KB)`);
+              }
+            } catch (e) {
+              console.log(`       ${c('dim', '└─')} 🖼️ Thumbnail fetch failed`);
+            }
+          }
         }
       } catch (e) {
         console.log(`       ${c('red', `✗ Playback check failed: ${e.message}`)}`);
