@@ -4,15 +4,15 @@
  * 
  * Downloads:
  *   - Current snapshot frame from each camera's live stream
- *   - First video segment from playback history (5s clip)
+ *   - Oldest video segment from playback history (5s clip)
  *   - 5-second real-time recording from each camera
  * 
  * Usage:
- *   node demo.js [destination_folder]
+ *   node demo.js --output <destination_folder>
  *   
  * Examples:
- *   node demo.js ./my-captures          # save to ./my-captures/
- *   MIPC_USER=xxx MIPC_PASS=xxx node demo.js
+ *   MIPC_USER=xxx MIPC_PASS=xxx node demo.js --output ./my-captures
+ *   node demo.js --user xxx --pass xxx --output ./captures/2026-08-09
  */
 
 const { MipcClient } = require('./src/index');
@@ -22,31 +22,16 @@ const { execFile, spawn } = require('child_process');
 
 // ---- Parse args -----------------------------------------------------------
 const args = process.argv.slice(2);
-let username, password;
+let username, password, outputDir;
 for (let i = 0; i < args.length; i++) {
   if (args[i] === '--user' && args[i + 1]) { username = args[++i]; }
   else if (args[i] === '--pass' && args[i + 1]) { password = args[++i]; }
+  else if (args[i] === '--output' && args[i + 1]) { outputDir = args[++i]; }
 }
 
 const baseUrl = process.env.MIPC_BASE || 'http://localhost:8080';
 username = username || process.env.MIPC_USER;
 password = password || process.env.MIPC_PASS;
-
-// Destination folder (default: ./captures/YYYY-MM-DD_HH-mm-ss/)
-let destFolder = args[0] || path.join(__dirname, 'captures');
-const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
-destFolder = path.join(destFolder, timestamp);
-
-if (!username || !password) {
-  console.log('MIPC SDK Demo — Full Camera Capture\n====================================\n');
-  console.log('Downloads: current frame, playback video clip, and 5s live recording per camera.');
-  console.log('\nUsage:');
-  console.log('  node demo.js [destination_folder]');
-  console.log('\nCredentials via env vars or args:');
-  console.log('  MIPC_USER=xxx MIPC_PASS=xxx node demo.js ./captures');
-  console.log('  node demo.js --user xxx --pass xxx ./captures\n');
-  process.exit(1);
-}
 
 // ---- Helpers --------------------------------------------------------------
 const colors = {
@@ -56,6 +41,21 @@ const colors = {
 
 function c(color, text) { return colors[color] ? colors[color] + text + colors.reset : text; }
 function pad(text, len) { return text.padEnd(len); }
+
+// Destination folder — REQUIRED (--output)
+if (!outputDir) {
+  console.log(c('bold', '\n📷 MIPC Camera SDK — Full Capture Demo\n'));
+  console.log(`Usage: ${c('cyan', 'node demo.js --output <destination_folder>')}`);
+  console.log('\nCredentials via env vars or args:');
+  console.log(`  ${c('cyan', 'MIPC_USER=xxx MIPC_PASS=xxx node demo.js --output ./captures')}`);
+  console.log(`  ${c('cyan', 'node demo.js --user xxx --pass xxx --output ./captures/2026-08-09')}\n`);
+  process.exit(1);
+}
+
+// Append timestamp subdirectory (e.g. ./captures/2026-08-09T21-57-03)
+const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+destFolder = path.resolve(path.join(outputDir, timestamp));
+destFolder = path.resolve(destFolder);
 
 // FFmpeg execution queue — serializes all calls to avoid conflicts
 const ffmpegQueue = [];
@@ -280,21 +280,25 @@ async function main() {
         if (segments && segments.length > 0) {
           console.log(`    Found ${c('bold', segments.length)} recording segment(s)`);
 
-          // Note: Cloud playback download requires binnet/P2P protocol.
-          // We capture from the live stream as a representative clip.
-          const firstSeg = segments[0];
-          const segStart = firstSeg.start_time || firstSeg.time_start;
-          const segEnd = firstSeg.end_time || firstSeg.time_end;
+          // Sort by start_time ascending → oldest first, take the last for oldest
+          const sorted = [...segments].sort((a, b) => {
+            const aTime = (a.start_time || a.time_start || 0);
+            const bTime = (b.start_time || b.time_start || 0);
+            return aTime - bTime;
+          });
+          const oldestSeg = sorted[sorted.length - 1];
+          const segStart = oldestSeg.start_time || oldestSeg.time_start;
+          const segEnd = oldestSeg.end_time || oldestSeg.time_end;
           
           if (segStart && segEnd) {
-            console.log(`    First segment: ${new Date(segStart * 1000).toISOString()} → ${new Date(segEnd * 1000).toISOString()}`);
+            console.log(`    Oldest segment: ${new Date(segStart * 1000).toISOString()} → ${new Date(segEnd * 1000).toISOString()}`);
           }
 
           // Capture from live stream as representative clip
           const playClipPath = path.join(devDir, `${dev.sn}_playback_clip.mp4`);
           const freshStreams2 = await client.snapshots.getStreamUrls(dev.sn).catch(() => streams);
           await captureClip(freshStreams2.rtsp || freshStreams2.http, playClipPath, 5,
-            'Capturing 5s clip (cloud playback needs binnet protocol)');
+            'Capturing 5s clip (oldest segment — cloud playback needs binnet protocol)');
         } else {
           // No segments found — still capture a live clip
           const playClipPath = path.join(devDir, `${dev.sn}_playback_clip.mp4`);
