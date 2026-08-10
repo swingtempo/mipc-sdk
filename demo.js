@@ -146,6 +146,23 @@ async function main() {
 
   fs.mkdirSync(destFolder, { recursive: true });
 
+  // Tee all console output to a log file (strip ANSI codes for the file)
+  const ansiStrip = /\x1b\[[0-9;]*m/g;
+  const logPath = path.join(destFolder, 'demo.log');
+  const logFd = fs.openSync(logPath, 'w');
+  const origLog = console.log;
+  const origErr = console.error;
+  console.log = (...args) => {
+    const line = args.map(a => String(a).replace(ansiStrip, '')).join(' ');
+    try { fs.writeSync(logFd, line + '\n'); } catch(e) {}
+    origLog.apply(console, args);
+  };
+  console.error = (...args) => {
+    const line = args.map(a => String(a).replace(ansiStrip, '')).join(' ');
+    try { fs.writeSync(logFd, line + '\n'); } catch(e) {}
+    origErr.apply(console, args);
+  };
+
   const client = new MipcClient({ baseUrl, username, password });
 
   try {
@@ -158,6 +175,8 @@ async function main() {
     
     if (devices.length === 0) {
       console.log(c('yellow', 'No devices registered.'));
+      console.log = origLog; console.error = origErr;
+      try { fs.closeSync(logFd); } catch(e) {}
       return;
     }
 
@@ -463,8 +482,14 @@ async function main() {
 
   } catch (err) {
     console.log(c('red', `\n❌ Error: ${err.message}`));
+    try { fs.closeSync(logFd); } catch(e) {}
     process.exit(1);
   }
+
+  // Restore console & close log file
+  console.log = origLog;
+  console.error = origErr;
+  try { fs.closeSync(logFd); } catch(e) {}
 }
 
 main();
